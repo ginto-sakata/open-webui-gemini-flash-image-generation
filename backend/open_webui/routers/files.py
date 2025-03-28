@@ -39,16 +39,22 @@ def upload_file(
     user=Depends(get_verified_user),
     file_metadata: dict = {},
 ):
-    log.info(f"file.content_type: {file.content_type}")
+    log.info(f"upload_file called. file.content_type: {file.content_type}")
     try:
         unsanitized_filename = file.filename
         filename = os.path.basename(unsanitized_filename)
 
-        # replace filename with uuid
         id = str(uuid.uuid4())
         name = filename
         filename = f"{id}_{filename}"
         contents, file_path = Storage.upload_file(file.file, filename)
+
+        file_meta = {
+            "name": name,
+            "content_type": file.content_type,
+            "size": len(contents),
+            "data": file_metadata,
+        }
 
         file_item = Files.insert_new_file(
             user.id,
@@ -57,57 +63,61 @@ def upload_file(
                     "id": id,
                     "filename": name,
                     "path": file_path,
-                    "meta": {
-                        "name": name,
-                        "content_type": file.content_type,
-                        "size": len(contents),
-                        "data": file_metadata,
-                    },
+                    "meta": file_meta,
                 }
             ),
         )
 
         try:
-            if file.content_type in [
-                "audio/mpeg",
-                "audio/wav",
-                "audio/ogg",
-                "audio/x-m4a",
-            ]:
-                file_path = Storage.get_file(file_path)
-                result = transcribe(request, file_path)
+            current_content_type = file.content_type
+            if current_content_type and current_content_type.startswith("audio/"):
+                log.info(f"Processing audio file: {id}")
+                stored_file_path = Storage.get_file(file_path)
+                result = transcribe(request, stored_file_path)
+                log.info(f"Transcription result for {id}: {result.get('text', '')[:100]}...") # Log snippet
                 process_file(
                     request,
                     ProcessFileForm(file_id=id, content=result.get("text", "")),
                     user=user,
                 )
+            # Skip Images and Videos for RAG processing to support Image Generation with Gemini 2.0 Flash
+            elif current_content_type and current_content_type.startswith(("image/", "video/")):
+                 log.info(f"Skipping RAG processing for non-document file type ({current_content_type}): {id}")
+                 pass
             else:
+                log.info(f"Processing potential document file for RAG (type: {current_content_type}): {id}")
                 process_file(request, ProcessFileForm(file_id=id), user=user)
 
             file_item = Files.get_file_by_id(id=id)
+
         except Exception as e:
-            log.exception(e)
-            log.error(f"Error processing file: {file_item.id}")
-            file_item = FileModelResponse(
-                **{
-                    **file_item.model_dump(),
-                    "error": str(e.detail) if hasattr(e, "detail") else str(e),
-                }
+            log.error(f"Error during post-upload processing for file: {id}", exc_info=True)
+            file_item = Files.get_file_by_id(id=id) if not file_item else file_item
+            file_item_dump = file_item.model_dump() if file_item else {}
+            return FileModelResponse(
+                **file_item_dump,
+                error=f"File uploaded but processing failed: {str(e.detail) if hasattr(e, 'detail') else str(e)}",
             )
 
+
         if file_item:
+            if hasattr(file_item, 'error') and file_item.error:
+                 log.warning(f"Returning file item with processing error attached: {file_item.error}")
+            else:
+                 log.info(f"File upload and processing completed successfully for ID: {id}")
             return file_item
         else:
+            log.error(f"Failed to retrieve file item after upload for ID: {id}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT("Error uploading file"),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ERROR_MESSAGES.DEFAULT("Error retrieving file after upload"),
             )
 
     except Exception as e:
-        log.exception(e)
+        log.error("Error during file upload process", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT(e),
+            detail=ERROR_MESSAGES.DEFAULT(f"Error uploading file: {e}"),
         )
 
 
