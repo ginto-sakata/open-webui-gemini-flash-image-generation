@@ -529,6 +529,96 @@ async def image_generations(
             return images
 
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
+            api_key = request.app.state.config.IMAGES_GEMINI_API_KEY
+            model = get_image_model(request)
+            base_url = request.app.state.config.IMAGES_GEMINI_API_BASE_URL
+
+            if not all([api_key, model, base_url]):
+                missing = [name for name, val in [("API Key", api_key), ("Model Name", model), ("Base URL", base_url)] if not val]
+                raise HTTPException(status_code=400, detail=f"Gemini configuration missing: {', '.join(missing)}")
+
+            headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+            structured_prompt = f"Generate an image of: {form_data.prompt}"
+
+            generation_config = {}
+
+            if "gemini-2.0-flash-exp-image-generation" in model:
+                log.info("Model requires 'responseModalities', adding to generationConfig.")
+                generation_config["responseModalities"] = ["TEXT", "IMAGE"] 
+
+            data = {
+                "contents": [{"role": "user", "parts": [{"text": structured_prompt}]}],
+                **({"generationConfig": generation_config} if generation_config else {})
+            }
+
+            api_url = f"{base_url}/models/{model}:generateContent"
+
+            log.info(f"Calling Gemini generateContent API: {api_url}")
+            log.debug(f"Request Data: {json.dumps(data)}")
+
+            response_text_content = ""
+            images = []
+            processed_image = False
+            r = None
+
+            try:
+                r = await asyncio.to_thread(requests.post, url=api_url, json=data, headers=headers, timeout=180)
+                log.debug(f"Response Status Code: {r.status_code}")
+                log.debug(f"Response Text (start): {r.text[:1000]}...")
+                r.raise_for_status()
+                res = r.json()
+
+                if "candidates" in res:
+                    for candidate in res.get("candidates", []):
+                        if "content" in candidate and "parts" in candidate["content"]:
+                            for part in candidate["content"]["parts"]:
+                                if "inlineData" in part:
+                                    inline_data = part["inlineData"]
+                                    mime_type = inline_data.get("mimeType", "")
+                                    b64_data = inline_data.get("data")
+                                    if mime_type.startswith("image/") and b64_data:
+                                        log.info(f"Found inline image data (mime: {mime_type})")
+                                        try:
+                                            image_data, content_type = load_b64_image_data(b64_data)
+                                            if image_data and content_type:
+                                                upload_metadata = {"model": model, "prompt": form_data.prompt}
+                                                url = upload_image(request, upload_metadata, image_data, content_type, user)
+                                                images.append({"url": url})
+                                                processed_image = True
+                                                log.info(f"Successfully processed image: {url}")
+                                            else: log.warning("load_b64_image_data failed.")
+                                        except Exception as upload_err: log.error(f"Error processing/uploading image: {upload_err}", exc_info=True)
+                                    else: log.debug("Skipping inlineData part, not image or missing data.")
+                                elif "text" in part and not processed_image:
+                                    response_text_content += part["text"] + "\n"
+                                    log.debug(f"Captured text part: {part['text'][:100]}...")
+                elif "error" in res:
+                    error_info = res["error"]
+                    log.error(f"API success status but error structure: {error_info}")
+                    response_text_content = error_info.get("message", "Unknown API error in response body")
+
+            except requests.exceptions.RequestException as req_err:
+                log.error(f"Request to Gemini API failed: {req_err}", exc_info=True)
+                error_detail = f"Network error communicating with Gemini API: {req_err}"
+                if r is not None:
+                    log.error(f"Error Response Text: {r.text}")
+                    try:
+                        error_json = r.json()
+                        if "error" in error_json and "message" in error_json["error"]:
+                             error_detail = f"Gemini API Error: {error_json['error']['message']}"
+                        else: error_detail = f"Gemini API Error (Status {r.status_code}): {r.text[:200]}"
+                    except json.JSONDecodeError: error_detail = f"Gemini API Error (Status {r.status_code}): {r.text[:200]}"
+                raise HTTPException(status_code=500, detail=error_detail)
+
+            if not processed_image:
+                final_error_detail = response_text_content.strip() if response_text_content else "No image data found in the valid candidates from Gemini API."
+                log.error(f"No valid image data found. Detail: '{final_error_detail}'. Full Response: {res if 'res' in locals() else 'N/A'}")
+                status_code = 400 if response_text_content else 500
+                raise HTTPException(status_code=status_code, detail=final_error_detail)
+
+            return images
+
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini_imagen":
             headers = {}
             headers["Content-Type"] = "application/json"
             headers["x-goog-api-key"] = request.app.state.config.IMAGES_GEMINI_API_KEY
