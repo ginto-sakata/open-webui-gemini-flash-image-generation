@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid
-from fnmatch import fnmatch # Keeping this as it was in the original for search
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -14,20 +14,19 @@ from fastapi import (
     Request,
     UploadFile,
     status,
-    Query, # Keeping this as it was in the original for search/list
+    Query,
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.models.files import (
     FileForm,
-    FileModel, # Keeping this as it was in the original
+    FileModel,
     FileModelResponse,
     Files,
 )
-from open_webui.models.knowledge import Knowledges # Keeping this as it was in the original
+from open_webui.models.knowledge import Knowledges
 
-# Keeping these as they were in the original
 from open_webui.routers.knowledge import get_knowledge, get_knowledge_list
 from open_webui.routers.retrieval import ProcessFileForm, process_file
 from open_webui.routers.audio import transcribe
@@ -86,9 +85,8 @@ def upload_file(
     file: UploadFile = File(...),
     user=Depends(get_verified_user),
     file_metadata: dict = {},
-    process: bool = Query(True), # Keeping this parameter from original
+    process: bool = Query(True),
 ):
-    # Using your log line here as it's slightly different
     log.info(f"upload_file called. file.content_type: {file.content_type}")
     try:
         unsanitized_filename = file.filename
@@ -99,7 +97,6 @@ def upload_file(
         filename = f"{id}_{filename}"
         contents, file_path = Storage.upload_file(file.file, filename)
 
-        # Define file_meta using original structure's fields
         file_meta = {
             "name": name,
             "content_type": file.content_type,
@@ -119,14 +116,11 @@ def upload_file(
             ),
         )
 
-        # *** Start of Your Modified Processing Block ***
-        # Note: We still check the original 'process' flag first
         if process:
             try:
                 current_content_type = file.content_type
                 if current_content_type and current_content_type.startswith("audio/"):
                     log.info(f"Processing audio file: {id}")
-                    # Use the stored file_path directly, Storage.get_file might be redundant if upload returns usable path
                     stored_file_path = Storage.get_file(file_path) # Keep get_file as per original logic flow before your change
                     result = transcribe(request, stored_file_path)
                     log.info(f"Transcription result for {id}: {result.get('text', '')[:100]}...") # Log snippet
@@ -135,51 +129,37 @@ def upload_file(
                         ProcessFileForm(file_id=id, content=result.get("text", "")),
                         user=user,
                     )
-                # Skip Images and Videos for RAG processing (Your Change)
                 elif current_content_type and current_content_type.startswith(("image/", "video/")):
                      log.info(f"Skipping RAG processing for non-document file type ({current_content_type}): {id}")
-                     pass # Explicitly do nothing for image/video RAG
+                     pass
                 else:
-                    # Process other files (potential documents) for RAG
                     log.info(f"Processing potential document file for RAG (type: {current_content_type}): {id}")
                     process_file(request, ProcessFileForm(file_id=id), user=user)
 
-                # Refresh file_item after processing
                 file_item = Files.get_file_by_id(id=id)
 
             except Exception as e:
-                # Your error handling for processing failure
                 log.error(f"Error during post-upload processing for file: {id}", exc_info=True)
-                # Ensure file_item exists before trying to access it for dump
                 if not file_item:
                     file_item = Files.get_file_by_id(id=id) # Try refetching if initial insert succeeded but processing failed early
 
                 file_item_dump = file_item.model_dump() if file_item else {}
-                # Return the file item model response with error attribute set
-                # This structure is slightly different from original's error handling here
                 return FileModelResponse(
                     **file_item_dump,
                     error=f"File uploaded but processing failed: {str(e.detail) if hasattr(e, 'detail') else str(e)}",
                 )
-        # *** End of Your Modified Processing Block ***
 
-
-        # Your final return logic which handles potential error attribute
         if file_item:
-            # Check if the error attribute was set during processing
             if hasattr(file_item, 'error') and file_item.error:
                  log.warning(f"Returning file item with processing error attached: {file_item.error}")
             else:
                  log.info(f"File upload and processing completed successfully for ID: {id}")
-            # Ensure we return the correct type (FileModelResponse)
-            # If file_item is already FileModelResponse (from error handling), use it, otherwise create one
             if isinstance(file_item, FileModelResponse):
                  return file_item
             else:
                  return FileModelResponse(**file_item.model_dump())
 
         else:
-            # Your error handling if file_item is None after insert/processing attempt
             log.error(f"Failed to retrieve file item after upload for ID: {id}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, # Changed to 500 as per your version
@@ -187,7 +167,6 @@ def upload_file(
             )
 
     except Exception as e:
-        # Your more generic outer error handling
         log.error("Error during file upload process", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -211,9 +190,8 @@ async def list_files(user=Depends(get_verified_user), content: bool = Query(True
     if not content:
         for file in files:
             if hasattr(file, 'data') and isinstance(file.data, dict) and 'content' in file.data:
-                 del file.data["content"] # Safely delete content if present
+                 del file.data["content"]
 
-    # Convert FileModel to FileModelResponse if necessary (assuming Files returns FileModel)
     response_files = [FileModelResponse(**f.model_dump()) for f in files]
     return response_files
 
@@ -236,13 +214,11 @@ async def search_files(
     """
     Search for files by filename with support for wildcard patterns.
     """
-    # Get files according to user role
     if user.role == "admin":
         files = Files.get_files()
     else:
         files = Files.get_files_by_user_id(user.id)
 
-    # Get matching files
     matching_files = [
         file for file in files if fnmatch(file.filename.lower(), filename.lower())
     ]
@@ -256,9 +232,8 @@ async def search_files(
     if not content:
         for file in matching_files:
              if hasattr(file, 'data') and isinstance(file.data, dict) and 'content' in file.data:
-                del file.data["content"] # Safely delete content if present
+                del file.data["content"]
 
-    # Convert FileModel to FileModelResponse if necessary
     response_files = [FileModelResponse(**f.model_dump()) for f in matching_files]
     return response_files
 
@@ -296,7 +271,7 @@ async def delete_all_files(user=Depends(get_admin_user)):
 ############################
 
 
-@router.get("/{id}", response_model=Optional[FileModel]) # Original uses FileModel here
+@router.get("/{id}", response_model=Optional[FileModel])
 async def get_file_by_id(id: str, user=Depends(get_verified_user)):
     file = Files.get_file_by_id(id)
 
@@ -309,9 +284,9 @@ async def get_file_by_id(id: str, user=Depends(get_verified_user)):
     if (
         file.user_id == user.id
         or user.role == "admin"
-        or has_access_to_file(id, "read", user) # Original check
+        or has_access_to_file(id, "read", user)
     ):
-        return file # Return FileModel as per original response_model
+        return file
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -338,9 +313,8 @@ async def get_file_data_content_by_id(id: str, user=Depends(get_verified_user)):
     if (
         file.user_id == user.id
         or user.role == "admin"
-        or has_access_to_file(id, "read", user) # Original check
+        or has_access_to_file(id, "read", user)
     ):
-        # Ensure data exists and is a dict before accessing 'content'
         content = file.data.get("content", "") if isinstance(file.data, dict) else ""
         return {"content": content}
     else:
@@ -375,7 +349,7 @@ async def update_file_data_content_by_id(
     if (
         file.user_id == user.id
         or user.role == "admin"
-        or has_access_to_file(id, "write", user) # Original check
+        or has_access_to_file(id, "write", user)
     ):
         try:
             process_file(
@@ -383,13 +357,11 @@ async def update_file_data_content_by_id(
                 ProcessFileForm(file_id=id, content=form_data.content),
                 user=user,
             )
-            file = Files.get_file_by_id(id=id) # Re-fetch file
+            file = Files.get_file_by_id(id=id)
         except Exception as e:
             log.exception(e)
             log.error(f"Error processing file: {file.id}")
-            # Consider re-raising or returning error status? Original didn't specify error return here.
 
-        # Ensure file and data exist before returning content
         content = ""
         if file and isinstance(file.data, dict):
              content = file.data.get("content", "")
@@ -410,7 +382,7 @@ async def update_file_data_content_by_id(
 
 @router.get("/{id}/content")
 async def get_file_content_by_id(
-    id: str, user=Depends(get_verified_user), attachment: bool = Query(False) # Original parameter
+    id: str, user=Depends(get_verified_user), attachment: bool = Query(False)
 ):
     file = Files.get_file_by_id(id)
 
@@ -423,7 +395,7 @@ async def get_file_content_by_id(
     if (
         file.user_id == user.id
         or user.role == "admin"
-        or has_access_to_file(id, "read", user) # Original check
+        or has_access_to_file(id, "read", user)
     ):
         try:
             file_path = Storage.get_file(file.path)
@@ -435,7 +407,6 @@ async def get_file_content_by_id(
                 content_type = file.meta.get("content_type")
                 headers = {}
 
-                # Original logic for Content-Disposition based on attachment flag and type
                 if attachment:
                     headers["Content-Disposition"] = (
                         f"attachment; filename*=UTF-8''{encoded_filename}"
@@ -446,16 +417,11 @@ async def get_file_content_by_id(
                         headers["Content-Disposition"] = (
                             f"inline; filename*=UTF-8''{encoded_filename}"
                         )
-                        content_type = "application/pdf" # Ensure correct media type for inline PDF
-                    # Default to attachment for other non-plain-text types if not forced by attachment=True
+                        content_type = "application/pdf"
                     elif content_type != "text/plain":
-                         # This logic might need review based on desired behavior for images/etc when attachment=False
-                         # Original seemed to imply attachment for non-PDF/non-text, let's keep that
                          headers["Content-Disposition"] = (
                              f"attachment; filename*=UTF-8''{encoded_filename}"
                          )
-                         # If attachment=False, but it's not PDF/text, should media_type be None or original?
-                         # Let's pass the original content_type
 
 
                 return FileResponse(file_path, headers=headers, media_type=content_type)
@@ -478,7 +444,6 @@ async def get_file_content_by_id(
         )
 
 
-# Keeping original /content/html endpoint
 @router.get("/{id}/content/html")
 async def get_html_file_content_by_id(id: str, user=Depends(get_verified_user)):
     file = Files.get_file_by_id(id)
@@ -499,9 +464,8 @@ async def get_html_file_content_by_id(id: str, user=Depends(get_verified_user)):
             file_path = Path(file_path)
 
             if file_path.is_file():
-                log.info(f"Serving HTML file_path: {file_path}") # Original log line had different content
-                # Assuming HTML should always be served directly if possible
-                return FileResponse(file_path, media_type="text/html") # Explicitly set media type
+                log.info(f"Serving HTML file_path: {file_path}")
+                return FileResponse(file_path, media_type="text/html")
             else:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -521,10 +485,57 @@ async def get_html_file_content_by_id(id: str, user=Depends(get_verified_user)):
         )
 
 
-# Removing the duplicate /content/{file_name} endpoint as it wasn't in your 'fixed' version
-# and the primary /content endpoint handles naming/disposition.
-# If the original truly had *both* /content and /content/{file_name} with different logic,
-# we might need to reconsider, but usually one is sufficient.
+@router.get("/{id}/content/{file_name}")
+async def get_file_content_by_id(id: str, user=Depends(get_verified_user)):
+    file = Files.get_file_by_id(id)
+
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    if (
+        file.user_id == user.id
+        or user.role == "admin"
+        or has_access_to_file(id, "read", user)
+    ):
+        file_path = file.path
+
+        filename = file.meta.get("name", file.filename)
+        encoded_filename = quote(filename)
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+
+        if file_path:
+            file_path = Storage.get_file(file_path)
+            file_path = Path(file_path)
+
+            if file_path.is_file():
+                return FileResponse(file_path, headers=headers)
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ERROR_MESSAGES.NOT_FOUND,
+                )
+        else:
+            file_content = file.content.get("content", "")
+            file_name = file.filename
+
+            def generator():
+                yield file_content.encode("utf-8")
+
+            return StreamingResponse(
+                generator(),
+                media_type="text/plain",
+                headers=headers,
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 ############################
@@ -546,22 +557,19 @@ async def delete_file_by_id(id: str, user=Depends(get_verified_user)):
     if (
         file.user_id == user.id
         or user.role == "admin"
-        or has_access_to_file(id, "write", user) # Original check
+        or has_access_to_file(id, "write", user)
     ):
-        # TODO: Add Chroma cleanup here (as per original comment)
+        # TODO: Add Chroma cleanup here
 
         result = Files.delete_file_by_id(id)
         if result:
             try:
-                # Make sure file.path exists before deleting
                 if file.path:
                     Storage.delete_file(file.path)
                 else:
                     log.warning(f"File {id} deleted from DB but had no path in storage.")
             except Exception as e:
                 log.exception(e)
-                # Log error but maybe don't raise? Deletion from DB succeeded.
-                # Original raises, let's keep that for consistency.
                 log.error(f"Error deleting file {file.path} from storage for ID {id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

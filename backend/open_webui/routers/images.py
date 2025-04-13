@@ -666,18 +666,11 @@ async def image_generations(
                 "contents": [{"role": "user", "parts": [{"text": structured_prompt}]}],
                  "generationConfig": {
                     "candidateCount": form_data.n if form_data.n > 0 else 1,
-                    # Output MimeType might be needed for specific models like Imagen
-                    # "outputMimeType": "image/png"
+                    "responseModalities": ["Text", "Image"]
                  }
             }
 
-            # Check if specific model requires 'responseModalities' (like flash experimental)
-            # This is a placeholder, adjust the model name check as needed
-            if "gemini-1.5-flash" in model: # Example check
-                log.info("Adding responseModalities for Flash model.")
-                data["generationConfig"]["responseModalities"] = ["IMAGE"] # Request only IMAGE modality
-
-            api_url = f"{base_url.strip('/')}/v1beta/models/{model}:generateContent" # Using v1beta commonly
+            api_url = f"{base_url.strip('/')}/v1beta/models/{model}:generateContent"
 
             log.info(f"Calling Gemini generateContent API: {api_url}")
             log.debug(f"Request Data: {json.dumps(data)}")
